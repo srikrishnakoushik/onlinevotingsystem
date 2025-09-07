@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import React, { useState, useEffect } from 'react';
 import { initializeApp } from 'firebase/app';
 import {
   getAuth,
@@ -18,9 +18,12 @@ import {
   onSnapshot,
   query,
   where,
-  increment,
   runTransaction,
 } from 'firebase/firestore';
+import { Box, Container, Grid, Card, Typography, Avatar, Chip, Stack } from '@mui/material';
+import EmojiEventsIcon from '@mui/icons-material/EmojiEvents';
+import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts';
+import axios from 'axios';
 
 // Your web app's Firebase configuration
 const firebaseConfig = {
@@ -39,6 +42,10 @@ const appId = 'online-voting-system-a1d0d';
 const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
 const db = getFirestore(app);
+
+// Cloudinary Configuration
+const CLOUD_NAME = 'dnlo7mv2j';
+const UPLOAD_PRESET = 'online_voting_preset';
 
 export default function App() {
   const [user, setUser] = useState(null);
@@ -60,6 +67,8 @@ export default function App() {
   const [newContestDescription, setNewContestDescription] = useState('');
   const [contestError, setContestError] = useState('');
   const [newOptionLabel, setNewOptionLabel] = useState('');
+  const [newOptionImageUrl, setNewOptionImageUrl] = useState('');
+  const [imageFile, setImageFile] = useState(null);
   const [selectedContest, setSelectedContest] = useState(null);
   const [options, setOptions] = useState([]);
   const [voterElections, setVoterElections] = useState([]);
@@ -310,6 +319,19 @@ export default function App() {
     }
   };
 
+  const handleDeleteElection = async (electionId) => {
+    if (window.confirm("Are you sure you want to delete this election and all of its data? This cannot be undone.")) {
+      try {
+        const electionDocRef = doc(db, `artifacts/${appId}/elections`, electionId);
+        await deleteDoc(electionDocRef);
+        // Note: Deleting sub-collections (contests, options, tallies) would require a Cloud Function
+        // to avoid a client-side performance bottleneck. For now, the parent document is deleted.
+      } catch (error) {
+        console.error("Failed to delete election:", error);
+      }
+    }
+  };
+
   const handleSelectElection = (election) => {
     setSelectedElection(election);
     if (userRole === 'admin') {
@@ -345,11 +367,13 @@ export default function App() {
   };
 
   const handleDeleteContest = async (contestId) => {
-      try {
-        const contestDocRef = doc(db, `artifacts/${appId}/elections/${selectedElection.id}/contests`, contestId);
-        await deleteDoc(contestDocRef);
-      } catch (error) {
-        console.error("Failed to delete contest:", error);
+      if (window.confirm("Are you sure you want to delete this contest?")) {
+          try {
+            const contestDocRef = doc(db, `artifacts/${appId}/elections/${selectedElection.id}/contests`, contestId);
+            await deleteDoc(contestDocRef);
+          } catch (error) {
+            console.error("Failed to delete contest:", error);
+          }
       }
     };
 
@@ -363,15 +387,33 @@ export default function App() {
       return;
     }
     try {
+      let imageUrl = newOptionImageUrl || 'https://placehold.co/128x128/30363d/8b949e?text=Candidate';
+
+      if (imageFile) {
+        const formData = new FormData();
+        formData.append('file', imageFile);
+        formData.append('upload_preset', UPLOAD_PRESET);
+
+        const response = await axios.post(
+          `https://api.cloudinary.com/v1_1/${CLOUD_NAME}/image/upload`,
+          formData
+        );
+        imageUrl = response.data.secure_url;
+      }
+      
       const newOptionRef = doc(collection(db, `artifacts/${appId}/elections/${selectedElection.id}/contests/${selectedContest.id}/options`));
       await setDoc(newOptionRef, {
         label: newOptionLabel,
         order: options.length,
+        imageUrl: imageUrl,
         createdAt: new Date(),
       });
+
       setNewOptionLabel('');
+      setNewOptionImageUrl('');
+      setImageFile(null);
     } catch (error) {
-      console.error("Failed to add option:", error);
+      console.error("Failed to add option or upload image:", error);
     }
   };
 
@@ -564,20 +606,51 @@ export default function App() {
             <li key={contest.id} className="contest-card-expanded">
               <h3 className="contest-title">{contest.title}</h3>
               <p className="description">{contest.description}</p>
-              <ul className="list-container">
+              <Grid container spacing={2} sx={{ mt: 2 }}>
                 {options.filter(o => o.contestId === contest.id).map(option => (
-                  <li key={option.id} className="option-card">
-                    <span className="option-label">{option.label}</span>
-                    <button
-                      className="secondary-button"
-                      onClick={() => handleVote(contest.id, option.id)}
-                      disabled={votedOptions[contest.id] !== undefined}
+                  <Grid item xs={12} sm={6} key={option.id}>
+                    <Card
+                      sx={{
+                        backgroundColor: '#1a1e23',
+                        color: '#e6e6e6',
+                        border: '1px solid #30363d',
+                        borderRadius: '0.75rem',
+                        p: 2,
+                        display: 'flex',
+                        flexDirection: 'column',
+                        alignItems: 'center',
+                        gap: 2,
+                        cursor: votedOptions[contest.id] !== undefined ? 'default' : 'pointer',
+                        transition: 'transform 0.2s ease-in-out',
+                        '&:hover': {
+                           transform: votedOptions[contest.id] !== undefined ? 'none' : 'scale(1.02)'
+                        }
+                      }}
+                      onClick={() => votedOptions[contest.id] === undefined && handleVote(contest.id, option.id)}
                     >
-                      {votedOptions[contest.id] === option.id ? 'Voted' : 'Select'}
-                    </button>
-                  </li>
+                      <Avatar
+                        src={option.imageUrl}
+                        alt={option.label}
+                        sx={{ width: 80, height: 80 }}
+                      />
+                      <Typography variant="h6" sx={{ fontWeight: 'bold', textAlign: 'center' }}>
+                        {option.label}
+                      </Typography>
+                      <button
+                        className="primary-button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleVote(contest.id, option.id);
+                        }}
+                        disabled={votedOptions[contest.id] !== undefined}
+                        style={{ width: '100%' }}
+                      >
+                        {votedOptions[contest.id] === option.id ? 'Voted' : 'Select'}
+                      </button>
+                    </Card>
+                  </Grid>
                 ))}
-              </ul>
+              </Grid>
             </li>
           ))}
         </ul>
@@ -585,40 +658,150 @@ export default function App() {
     </div>
   );
 
-  const renderResultsPage = () => (
-    <div className="page-content-container">
-      <h2 className="page-heading">Results for: {selectedElection.title}</h2>
-      <p className="description">Live vote tally for each contest.</p>
-      {userRole === 'admin' ? (
-        <button className="secondary-button back-button" onClick={handleAdminBackToElections}>
-          &larr; Back to Elections
-        </button>
-      ) : (
-        <button className="secondary-button back-button" onClick={handleVoterBackToElections}>
-          &larr; Back to Elections
-        </button>
-      )}
-      {contests.length === 0 ? (
-        <p className="description-text">No contests to show results for.</p>
-      ) : (
-        <ul className="list-container">
-          {contests.map(contest => (
-            <li key={contest.id} className="results-card">
-              <h3 className="section-heading">{contest.title}</h3>
-              <ul className="list-container">
-                {options.filter(o => o.contestId === contest.id).map(option => (
-                  <li key={option.id} className="vote-item">
-                    <span className="option-label">{option.label}</span>
-                    <span className="vote-count">{results[contest.id]?.[option.id] || 0}</span>
-                  </li>
-                ))}
-              </ul>
-            </li>
-          ))}
-        </ul>
-      )}
-    </div>
-  );
+  const renderResultsPage = () => {
+    if (!selectedElection) return null;
+
+    const findWinner = (contestId) => {
+      const contestResults = results[contestId];
+      if (!contestResults) return [];
+
+      let winner = [];
+      let maxVotes = 0;
+
+      for (const optionId in contestResults) {
+        const voteCount = contestResults[optionId];
+        if (voteCount > maxVotes) {
+          maxVotes = voteCount;
+          winner = [optionId];
+        } else if (voteCount === maxVotes) {
+          winner.push(optionId);
+        }
+      }
+      return winner;
+    };
+    
+    return (
+      <Container maxWidth="md" sx={{ py: 4 }}>
+        <Box sx={{ textAlign: 'center', mb: 4 }}>
+          <Typography variant="h4" component="h2" sx={{ fontWeight: 'bold', color: '#e6e6e6' }}>
+            Results for: {selectedElection.title}
+          </Typography>
+          <Typography variant="body1" sx={{ color: '#8b949e', mt: 1 }}>
+            {selectedElection.status === 'live' ? 'Live Tally' : 'Final Results'}
+          </Typography>
+          {userRole === 'admin' ? (
+            <button className="secondary-button back-button" onClick={handleAdminBackToElections}>
+              &larr; Back to Elections
+            </button>
+          ) : (
+            <button className="secondary-button back-button" onClick={handleVoterBackToElections}>
+              &larr; Back to Elections
+            </button>
+          )}
+        </Box>
+        {contests.length === 0 ? (
+          <Typography variant="body1" sx={{ textAlign: 'center', color: '#8b949e' }}>
+            No contests to show results for.
+          </Typography>
+        ) : (
+          contests.map((contest) => {
+            const contestOptions = options.filter(o => o.contestId === contest.id);
+            const contestResults = results[contest.id] || {};
+            const winnerIds = findWinner(contest.id);
+            const isLive = selectedElection.status === 'live';
+            
+            const chartData = contestOptions.map(option => ({
+              name: option.label,
+              votes: contestResults[option.id] || 0
+            }));
+
+            return (
+              <Box key={contest.id} sx={{ mb: 6 }}>
+                <Typography variant="h5" sx={{ fontWeight: 'bold', color: '#ffffff', mb: 2 }}>
+                  {contest.title}
+                </Typography>
+                
+                <Grid container spacing={3} sx={{ mb: 4 }}>
+                  {contestOptions.map((option, index) => {
+                    const isWinningCandidate = winnerIds.includes(option.id);
+                    const voteCount = contestResults[option.id] || 0;
+                    return (
+                      <Grid item xs={12} sm={6} md={4} key={option.id}>
+                        <Card
+                          sx={{
+                            backgroundColor: '#1a1e23',
+                            color: '#e6e6e6',
+                            border: `2px solid ${isWinningCandidate ? (isLive ? '#58a6ff' : '#22863a') : '#30363d'}`,
+                            boxShadow: `0 4px 10px rgba(0, 0, 0, 0.5)`,
+                            borderRadius: '1rem',
+                            display: 'flex',
+                            flexDirection: 'column',
+                            alignItems: 'center',
+                            p: 3,
+                          }}
+                        >
+                          <Stack direction="row" spacing={1} sx={{ mb: 1 }}>
+                            {isWinningCandidate && (
+                              <Chip
+                                icon={isLive ? null : <EmojiEventsIcon />}
+                                label={isLive ? 'Leading' : (winnerIds.length > 1 ? 'Tied Winner' : 'Winner')}
+                                sx={{ backgroundColor: isLive ? '#58a6ff' : '#22863a', color: '#fff', fontWeight: 'bold' }}
+                              />
+                            )}
+                          </Stack>
+                          <Avatar
+                            src={option.imageUrl}
+                            sx={{ width: 80, height: 80, mb: 2, border: `2px solid ${isWinningCandidate ? (isLive ? '#58a6ff' : '#22863a') : 'transparent'}` }}
+                          />
+                          <Typography variant="h6" sx={{ fontWeight: 'bold', textAlign: 'center' }}>
+                            {option.label}
+                          </Typography>
+                          <Typography variant="h4" sx={{ fontWeight: 'bold', mt: 1, color: '#58a6ff' }}>
+                            {voteCount}
+                          </Typography>
+                          <Typography variant="body2" sx={{ color: '#8b949e' }}>
+                            Votes
+                          </Typography>
+                        </Card>
+                      </Grid>
+                    );
+                  })}
+                </Grid>
+
+                <Typography variant="h6" sx={{ fontWeight: 'bold', color: '#ffffff', mb: 2, textAlign: 'center' }}>
+                  Vote Distribution
+                </Typography>
+                <Box sx={{ height: 300, width: '100%', mb: 4, animation: 'fadeInUp 0.8s ease-out' }}>
+                  <ResponsiveContainer width="100%" height="100%">
+                    <BarChart
+                      data={chartData}
+                      margin={{
+                        top: 20,
+                        right: 30,
+                        left: 20,
+                        bottom: 5,
+                      }}
+                    >
+                      <CartesianGrid strokeDasharray="3 3" stroke="#21262d" />
+                      <XAxis dataKey="name" stroke="#8b949e" />
+                      <YAxis stroke="#8b949e" />
+                      <Tooltip 
+                        contentStyle={{ backgroundColor: '#1a1e23', border: '1px solid #30363d', borderRadius: '0.5rem' }}
+                        labelStyle={{ color: '#e6e6e6' }}
+                        itemStyle={{ color: '#e6e6e6' }}
+                      />
+                      <Legend />
+                      <Bar dataKey="votes" fill="#58a6ff" />
+                    </BarChart>
+                  </ResponsiveContainer>
+                </Box>
+              </Box>
+            );
+          })
+        )}
+      </Container>
+    );
+  };
 
   const renderAdminPage = () => (
     <div className="page-content-container">
@@ -642,6 +825,23 @@ export default function App() {
                 placeholder="Option Label (e.g., Candidate A)"
                 className="input-field"
                 required
+              />
+              <p className="description-text" style={{ textAlign: 'left', marginTop: '0.5rem' }}>
+                Upload an image or paste a URL below.
+              </p>
+              <input
+                type="file"
+                onChange={(e) => setImageFile(e.target.files[0])}
+                className="input-field"
+                style={{ border: 'none', padding: '0.5rem 1rem' }}
+              />
+              <input
+                type="text"
+                value={newOptionImageUrl}
+                onChange={(e) => setNewOptionImageUrl(e.target.value)}
+                placeholder="Image URL (optional)"
+                className="input-field"
+                disabled={imageFile !== null}
               />
               <button type="submit" className="primary-button">Add Option</button>
             </form>
@@ -747,6 +947,7 @@ export default function App() {
                         </select>
                         <button className="secondary-button" onClick={() => handleSelectElection(election)}>Manage</button>
                         <button className="secondary-button" onClick={() => handleViewResults(election)}>View Results</button>
+                        <button onClick={() => handleDeleteElection(election.id)} className="delete-button">Delete</button>
                       </div>
                     </div>
                   </li>
